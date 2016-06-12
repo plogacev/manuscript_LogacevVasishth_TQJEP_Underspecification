@@ -1,0 +1,46 @@
+parent _ child 		prob 			code
+
+# start nodes specifying code valid for all branches
+start0 -> start		1 				shape_reading=shape_reading_base*crit_region_cnt;shape_response=shape_response_base
+start  -> cAMB		iv_cond==0
+start  -> cN1 		iv_cond==1
+start  -> cN2		  iv_cond==2
+
+# N1 attachment options
+cN1 -> N1 			  (1-p_uspec_unamb)*((1-p_arbitrary_attachment)+p_arbitrary_attachment*p_att_n1)		shape_reading=shape_reading+shape_delta_attach_N2+shape_delta_attach_N1
+cN1 -> N2 			  (1-p_uspec_unamb)*p_arbitrary_attachment*(1-p_att_n1)
+cN1 -> USPEC_N1		p_uspec_unamb
+
+# N2 attachment options
+cN2 -> N2 			  (1-p_uspec_unamb)*((1-p_arbitrary_attachment)+p_arbitrary_attachment*(1-p_att_n1))		shape_reading=shape_reading+shape_delta_attach_N2
+cN2 -> N1 			  (1-p_uspec_unamb)*p_arbitrary_attachment*p_att_n1
+cN2 -> USPEC_N2		p_uspec_unamb
+
+# ambiguous attachment options
+cAMB -> USPEC_AMB 	p_uspec
+cAMB -> N1 			    (1-p_uspec)*p_att_n1 		
+cAMB -> N2 			    (1-p_uspec)*(1-p_att_n1) 	
+
+# after N1 attachment has been established during reading
+N1 -> GUESS 		p_retrieval_fail						pY=p_guess_yes;shape_response=shape_response+shape_response_delta_guess
+N1 -> resp_N1 	1-p_retrieval_fail					pY=(iv_questN1==1)
+
+# after N2 attachment has been established during reading
+N2 -> GUESS 		p_retrieval_fail	
+N2 -> resp_N2		1-p_retrieval_fail  					pY=(iv_questN1==0)
+
+# after N1 attachment has been underspecified
+USPEC_N1 -> late_N1 	"p_pspec*(1-p_retrieval_fail)"            shape_response=shape_response+shape_delta_attach_N2+shape_delta_attach_N1
+USPEC_N1 -> GUESS 		"p_pspec*p_retrieval_fail + (1-p_pspec)"
+
+# after N2 attachment has been underspecified
+USPEC_N2 -> late_N2 	p_pspec*(1-p_retrieval_fail)              shape_response=shape_response+shape_delta_attach_N2
+USPEC_N2 -> GUESS 		"p_pspec*p_retrieval_fail + (1-p_pspec)"
+
+# after ambiguous attachment has been underspecified
+USPEC_AMB -> late_N1 	p_pspec*(1-p_retrieval_fail)*p_att_n1 	
+USPEC_AMB -> late_N2 	p_pspec*(1-p_retrieval_fail)*(1-p_att_n1) 		
+USPEC_AMB -> GUESS 		"p_pspec*p_retrieval_fail + (1-p_pspec)"
+
+late_N1 -> resp_N1	1
+late_N2 -> resp_N2 	1

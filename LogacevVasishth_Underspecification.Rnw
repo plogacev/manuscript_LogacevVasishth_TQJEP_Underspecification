@@ -1,0 +1,647 @@
+\documentclass[doc]{apa6} %doc, man
+\usepackage[utf8]{inputenc}
+\usepackage{multicol}
+\usepackage{booktabs}
+\usepackage{enumitem}
+\usepackage{apalike}
+
+% Add line numbering
+\usepackage{lineno}
+
+\setlist[enumerate]{noitemsep}
+% uncomment the line below to align first-level eunmerated lists along the
+% left margin
+% \setlist[enumerate,1]{leftmargin=*}
+\setlist[enumerate,2]{label={\alph*}),leftmargin=0em}
+% aligns second-level enumerated lists with the first-level enumerated lists
+
+
+% GB4E, and settings
+\usepackage{gb4e}
+\let\eachwordtwo=\it
+
+\usepackage{apacite}
+\bibstyle{apacite}
+
+\def \texit#1 {\textit{#1}}
+\def \textif#1 {\textit{#1}}
+\def \texif#1 {\textit{#1}}
+
+\def \TODO#1 {}
+\def \NOTE#1 {}
+\newcommand{\citeapos}[1]{\citeauthor{#1}'s \citeyear{#1}}
+\newcommand{\remark}[1]{\marginpar{\begin{tiny}#1\end{tiny}}}
+\setlength{\marginparwidth}{2.5cm}
+
+\newcommand{\specialcell}[2]{\begin{tabular}{#1}#2\end{tabular}}
+
+\def \change#1 {#1~}
+
+
+\title{Understanding underspecification: A comparison of two computational implementations}
+\shorttitle{Understanding underspecification}
+
+\author{Pavel Loga\v cev and Shravan Vasishth}
+\affiliation{Department of Linguistics, University of Potsdam, Potsdam, Germany}
+\date{Version dated \today}
+ 
+ 
+\abstract{Swets et al.\ (2008) present evidence that the so-called ambiguity advantage (Traxler et al., 1998),
+which has been explained in terms of the Unrestricted Race Model, can equally well be explained by assuming underspecification in ambiguous conditions driven by task-demands. Specifically, if comprehension questions require that ambiguities be resolved, the parser tends to make an attachment:
+when questions are about superficial aspects of the target sentence, readers tend to pursue an underspecification strategy. 
+It is reasonable to assume that individual differences in strategy will play a significant role in the application of such strategies, \change{so that} studying average behavior may not be informative.
+In order to study the predictions of \change{the} good-enough processing theory, we implemented two versions of underspecification: the partial specification model (PSM), which is an implementation of the Swets et al.\ proposal, and a more parsimonious version, the non-specification model (NSM). 
+We evaluate the relative fit of these two kinds of underspecification to Swets et al.'s data; as a baseline, we also fit three models that assume no underspecification. 
+We find that a model without unspecification provides a somewhat better fit than both underspecification models, while the NSM model provides a better fit than the PSM.
+We interpret the results as lack of unambiguous evidence in favor of underspecification; however, given that there is considerable existing evidence for good-enough processing in the literature, it is reasonable to assume that some underspecification might occur. Under this assumption, the results can be interpreted as tentative evidence for NSM over PSM.
+ More generally, our work provides a method for choosing between models of real-time processes in sentence comprehension that make qualitative predictions about the relationship between several dependent variables. We believe that sentence processing research will greatly benefit from a wider use of such methods.
+}
+
+
+\authornote{
+\change{
+We thank Benjamin Swets for sharing the raw data from \citeA{SwetsDesmetCliftonFerreira2008}, and for providing many helpful and constructive comments on our work, both in the present paper and in \citeA{LogacevVasishth2015CogSci}.
+}
+}
+
+\note{Version dated \today}
+
+\begin{document}
+
+<<include=FALSE>>=
+opts_chunk$set(concordance=TRUE,results='hide',tidy=FALSE,cache=TRUE,cache.path='./cache/',fig.path='./figures/fig')
+@
+
+
+
+<<globalDeclarations, echo=F>>=
+
+options(scipen = 1, digits = 2)
+
+# Functions related to the lognormal distribution
+MeanLognorm <- function(mu, sigma) exp(mu+.5*sigma^2)
+SDLognorm <- function(logmean, logsd) sqrt( (exp(logsd^2)-1)*exp(2*logmean+logsd^2) )
+LogMean <- function(mean, sd) log(mean)-0.5*log((mean^2 + sd^2)/mean^2)
+LogSD <- function(mean, sd) sqrt( log((mean^2 + sd^2)/mean^2) )
+
+dlnormMeanSD <- function(x, mean, sd) dlnorm(x, LogMean(mean,sd), LogSD(mean,sd)) 
+plnormMeanSD <- function(x, mean, sd) plnorm(x, LogMean(mean,sd), LogSD(mean,sd)) 
+rlnormMeanSD <- function(x, mean, sd) rlnorm(x, LogMean(mean,sd), LogSD(mean,sd)) 
+
+@ 
+
+
+<<SwetsEtAl-RTs-Prepare, echo=F, results='hide', eval=TRUE, message=FALSE>>=
+
+library(reshape)
+
+source("./source/RprofilePavel.R")
+source("./Data_Swets_et_al/RScriptSwetsData.R")
+d <- read.swets.data("./Data_Swets_et_al/Data_All.csv")
+
+d = subset(d, qtype%in%c('RC questions'))
+d = d[with(d, order(subj,trial,item,rid)),]
+d.critical <- subset(d, rid=="reflexive") 
+d.critical2 <- subset(d, rid=="region9") 
+d.critical$RT = d.critical$RT + d.critical2$RT
+
+# find participants with more than 35% correct answers in the unambiguous conditions
+subject.acc = with(d.critical, tapply(response.yes==correct.response.yes, list(subj, attachment), mean ))
+nmap(asc(d.critical$subj),  subject.acc[,'N1'], as.double) -> d.critical$acc.N1
+nmap(asc(d.critical$subj),  subject.acc[,'N2'], as.double) -> d.critical$acc.N2
+
+acc.min = .5
+d.qrc = subset(d.critical, acc.N1 > acc.min & acc.N2 > acc.min)
+d.excluded = unique( subset(d.critical, !(acc.N1 > acc.min & acc.N2 > acc.min))[,c('subj','qtype','acc.N1','acc.N2')] )
+
+excluded.subjects.rc.N1 = unique(subset(d.excluded, acc.N1 > acc.min)$subj)
+excluded.subjects.rc.N2 = unique(subset(d.excluded, acc.N2 > acc.min)$subj)
+
+#d.qrc$attachment = ordered(d.qrc$attachment, levels=c("N1","N2","ambiguous"))
+d.qrc$attachment.n2 = with(d.qrc, ifelse(attachment=="N2", 1, 0))
+d.qrc$response.correct = NA
+d.qrc$response.correct[d.qrc$attachment!="ambiguous"] = with(subset(d.qrc, attachment!="ambiguous"), ifelse(response.yes==correct.response.yes, 1, 0))
+d.qrc$response.yes.str = nmap(d.qrc$response.yes, c('0'="`no'", '1'="`yes'"))
+d.qrc$response.correct.str = nmap(asc(d.qrc$response.correct), c('1'='correct response', '0'='incorrect response'))
+d.qrc$crit.region.cnt = d.qrc$pc.cnt + 1
+
+d.qrc = subset(d.qrc, resp.RT < 15000 )
+
+@
+
+\maketitle
+
+\section{Introduction}
+Sentence processing research has been focused on answering the question:
+How do we integrate the words we hear or read into syntactic structure in order to arrive at the meaning of a sentence?
+Theories of sentence comprehension have typically assumed that readers or listeners create a fully specified representation of a sentence they are trying to understand. This means that in a sentence like (\ref{ExSimple}), readers know that \textit{the boy} is the agent and \textit{the dog} is the patient of biting. It also means that in ambiguous sentences such as (\ref{ExRC}), readers either think that the general was standing on the balcony, or that the general's daughter was. In other words, a widely held assumption is that the comprehender attaches the relative clause to either the first noun (N1) or the second noun (N2).
+ 
+\begin{exe}
+  \ex \label{ExSimple} The boy bit the dog.
+  \ex \label{ExRC} Who saw the daughter$_{N1}$ of the general$_{N2}$ who was standing on the balcony?
+\end{exe}
+ 
+ However, there is increasing evidence that the relevant research question may well be: \textit{do} we combine words to build structure at all?
+%
+A prominent example is \citeA{Christiansonetal:2001}; they found that readers sometimes do not carry out full reanalysis of garden-path sentences. In their experiment, participants read sentences such as (\ref{ExChristEtAlGP}) and (\ref{ExChristEtAlNGP}). (\ref{ExChristEtAlGP}) is a locally ambiguous version of the sentence in (\ref{ExChristEtAlNGP}), which tends to garden-path readers. When asked comprehension questions such as \textit{Did the man hunt the deer?}, participants tended to respond `yes' more often in the locally ambiguous condition (\ref{ExChristEtAlGP}) than in the unambiguous baseline (\ref{ExChristEtAlNGP}). On the basis of findings such as these, \citeA{Christiansonetal:2001} argue that participants do not always fully reanalyze garden-path sentences, and that they sometimes create an inconsistent representation of the sentence in (\ref{ExChristEtAlGP}). In this representation, \textit{the deer} functions as the object of \textit{hunted}, but also as the subject of \textit{ran}.
+
+\begin{exe}
+\ex \begin{xlist}
+      \ex \label{ExChristEtAlNGP} While the man hunted the pheasant the deer ran into the woods.
+      \ex \label{ExChristEtAlGP} While the man hunted the deer ran into the woods.
+    \end{xlist}
+\end{exe}
+
+This finding is not unexpected under the assumptions of the good-enough approach to language comprehension \cite<e.g.,>{FerreiraEtAl:2002, SanfordSturt2002}. Under this view, the comprehender seeks to reduce processing effort, and tries to do no more than what they think is sufficient to complete the task. To this end, they may either underspecify certain aspects of the sentence meaning \cite{SanfordSturt2002}, or use heuristics to arrive at the final interpretation. For example, \citeA{Ferreira:2003} found that participants were significantly worse at correctly identifying the patient and agent of implausible passive sentences like (\ref{ExFerImplaus}) than their plausible counterparts such as (\ref{ExFerPlaus}). There was no such difference between corresponding active sentences. According to \citeA{Ferreira:2003}, these findings suggest that readers may make use of simple heuristics instead of deploying their syntactic machinery when the latter would be too taxing. 
+
+\begin{exe}
+\ex \begin{xlist}
+      \ex \label{ExFerPlaus} The man was bitten by the dog.
+      \ex \label{ExFerImplaus} The dog was bitten by the man.
+    \end{xlist}
+\end{exe}
+
+
+In sum, proponents of the good-enough processing account have provided strong evidence that the
+comprehender does not always build perfect representations -- instead they sometimes make use of simpler strategies which will produce the desired results, at least on some trials. Such a strategy may also be the explanation for the surprising finding called the \textit{ambiguity advantage}, which we discuss next.
+
+\section{The Ambiguity Advantage}
+
+\citeA{TraxlerPickeringClifton:1998} found that ambiguous sentences like (\ref{ExTraxlerAmb}) were read faster at the word \textit{moustache} than their unambiguous counterparts such as (\ref{ExTraxlerHigh}) and (\ref{ExTraxlerLow}). To explain this finding,  \citeA{TraxlerPickeringClifton:1998} and \citeA{VanGompelPickeringTraxler:2000} proposed the \textit{Unrestricted Race Model (URM)}. According to the URM, the parser commits to either an N1- or an N2-reading as soon as it encounters an ambiguity (i.e., at the word \textit{that}). Importantly, whether the parser chooses to attach the RC to N1 or to N2 
+varies from trial to trial -- in other words, the parser's choice is non-deterministic. As a result, the parser sometimes commits to parses in the unambiguous conditions, which later turn out to be wrong. Upon disambiguation at \textit{moustache}, reanalysis is required. Ambiguous conditions, however, are compatible with either reading, and so no reanalysis is required. The lack of reanalysis leads to a speedup in the ambiguous conditions.
+
+\begin{exe}
+\ex \begin{xlist}
+      \ex \label{ExTraxlerHigh} The driver of the car \textit{that had the moustache} was pretty cool. (N1 attachment)
+      \ex \label{ExTraxlerLow} The car of the driver \textit{that had the moustache} was pretty cool. (N2 attachment)
+      \ex \label{ExTraxlerAmb} The son of the driver \textit{that had the moustache} was pretty cool. (globally ambiguous)
+    \end{xlist}
+\end{exe} 
+
+
+
+There are other interesting alternative explanations of the ambiguity advantage. In addition to a task-dependent variant of the unrestricted race model proposed by the present authors \cite{LogacevVasishth2015CogSci}, the ambiguity advantage can be explained by Levy's surprisal theory \cite{Levy:2008}. Levy discusses the ambiguity advantage using the trio of sentences shown in (\ref{ExTraxler2}).
+
+\begin{exe}
+\ex \label{ExTraxler2}  \begin{xlist}
+      \ex \label{ExTraxler2High} The daughter_i of the colonel_j who shot herself_{i/*j} on the balcony had been very depressed. (N1 attachment)
+      \ex \label{ExTraxler2Low} The daughter_i of the colonel_j who shot himself_{*i/j} on the balcony had been very depressed. (N2 attachment)
+      \ex \label{ExTraxler2Amb} The son_i of the colonel_j who shot himself_{i/j} on the balcony had been very depressed. (globally ambiguous)
+    \end{xlist}
+\end{exe} 
+
+Levy's surprisal account for the ambiguity advantage is that the conditional probability of the potentially disambiguating word (\textit{himself} or \textit{herself}) is higher in the ambiguous sentences \change{like (\ref{ExTraxler2Amb}) than in} the unambiguous cases (\ref{ExTraxler2High}) and (\ref{ExTraxler2Low}). This is because in (\ref{ExTraxler2Amb}) both possible attachments of the RC, high and low, contribute probability mass to the probability of \textit{himself} appearing (thus making it more predictable). In (\ref{ExTraxler2High}), however, only N1 attachment contributes probability mass and in (\ref{ExTraxler2Low}) only the N2 attachment contributes probability mass (making \textit{himself} less predictable in (\ref{ExTraxler2High}) and (\ref{ExTraxler2Low}) than in (\ref{ExTraxler2Amb})). This is certainly a possible explanation. However, in this article, our goal is to explore the implications of a radically different explanation of the ambiguity advantage, proposed by \citeA{SwetsDesmetCliftonFerreira2008}.
+
+
+\section{Underspecification as an Explanation for the Ambiguity Advantage}
+
+\citeA{SwetsDesmetCliftonFerreira2008} claim that the ambiguity advantage is a consequence of \textit{strategic underspecification}. According to their account, the comprehender underspecifies the meaning of ambiguous sentences if the task does not require ambiguity resolution. This behavior can explain the ambiguity advantage found by Traxler at al., because participants in that experiment did not have to answer questions about RC attachment. Therefore, ambiguity resolution was not required. An interesting prediction of the underspecification account is that the ambiguity advantage should disappear when the comprehender expects to be asked about relative clause attachment. Such expectations force the parser to disambiguate. Swets \change{and} colleagues tested this hypothesis in an experiment with sentences such as (\ref{ExSwets}). While RC attachment (N1, N2, or ambiguous) was varied as a within-subject factor, three different groups of participants were asked different types of comprehension questions. Forty-eight participants were asked questions concerning RC attachment after every experimental sentence (e.g., \textit{Did the maid/princess/son scratch in public?}). Another group of 48 participants was asked superficial questions which were unrelated to RC attachment (e.g., \textit{Was anyone humiliated/proud?}), and a third group was asked superficial questions occasionally.
+\begin{exe}
+\ex \label{ExSwets} \begin{xlist}
+      \ex The son of the princess who scratched himself in public was terribly humiliated. (N1 attachment)
+      \ex The son of the princess who scratched herself in public was terribly humiliated. (N2 attachment)
+      \ex The maid of the princess who scratched herself in public was terribly humiliated. (globally ambiguous)
+    \end{xlist}
+\end{exe}
+
+Swets et al.\ found an ambiguity advantage in the superficial questions condition, but not in the RC questions conditions. This finding is consistent with the predictions of strategic underspecification: In the superficial condition, the comprehender does not expect to be tested about RC attachment and thus underspecifies to conserve time and effort. In the RC questions condition, however, this is not an option. Consequently, the comprehender attaches the relative clause to the preferred attachment site (i.e., to N2) most of the time.
+
+In addition to effects of question type on reading time, Swets et al.\ found that participants were slower at answering RC attachment questions about ambiguous sentences than about unambiguous sentences. They argue that the additional time needed to answer RC questions when the sentence is ambiguous can be explained by assuming that the parser sometimes underspecifies RC attachment during reading, and that the RC has to be attached before responding to the question. This postponed RC attachment is carried out after reading the question and requires additional time.
+This implies that even in the RC questions condition, underspecification trials occur. To put it differently, even in conditions where participants are expected to carry out the attachment, in some cases they do not make an attachment.
+
+We have previously argued elsewhere \cite{LogacevVasishth2015CogSci} that the finding of slowed responses in ambiguous conditions does not constitute clear-cut evidence in favor of underspecification. This is, in part, because the underspecification model makes a more fine-grained prediction: it predicts that the subset of trials affected by underspecification should be associated with longer question answering times, as well as faster reading. However, Swets et al.\ did not find an ambiguity advantage in reading times in the RC questions condition. Importantly, the absence of this finding is in principle compatible with the underspecification model, under the assumption that underspecification trials cause a sufficiently large slow-down during the question answering phase, but a relatively small speed-up during reading.
+Because this explanation assumes a mixture of trials which are not straightforwardly separable (underspecification and non-underspecification), this hypothesis can best be tested by directly modeling this mixture, which we will do in this paper.
+
+Furthermore, if underspecification occurs even when task-demands presumably require full specification, a fuller treatment of underspecification in the good-enough framework needs to answer the following questions: 
+%
+(a) what exactly happens during underspecification trials; 
+(b) how often does underspecification occur? 
+%
+In order to spell out the logical possibilities, we formalize the Swets et al.\ model of underspecification, develop a more parsimonious version of this model, and compare these two models' relative fit with respect to the Swets et al.\ data. 
+
+Before we can present the alternative models of underspecification, it is important to understand the salient facts of the Swets et al.\ study first. We address this point below.
+
+
+
+\section{A Reanalysis of Swets et al.'s Data}
+
+We analyzed the response accuracy, the question-answering time, and the reading time data from the RC questions condition in Swets et al.'s experiment.\footnote{Many thanks to Benjamin Swets for providing us with the raw data of the experiment.} We only analyzed data from the RC questions condition, because the three dependent measures pertinent to underspecification were recorded on each trial: reading time, question answering time, and the RC attachment indicated by the response (N1 attachment, or N2 attachment). Because across all question conditions, \citeA{SwetsDesmetCliftonFerreira2008} found effects of attachment on the potentially disambiguating word (\textit{himself/herself}) and the spill-over region (\textit{in public}), we analyzed the time participants required to read both regions (treated as one region).
+In the analysis, we used all trials with question answering times of less than 15 seconds.\footnote{However all the patterns reported here held true when we applied a stricter exclusion criterion of 8 seconds.} 
+%
+We excluded the data of \Sexpr{length(unique(c(excluded.subjects.rc.N1, excluded.subjects.rc.N2)))} out of \Sexpr{length(unique(d.qrc[,'subj']))+length(unique(c(excluded.subjects.rc.N1, excluded.subjects.rc.N2)))} participants because they had 50\% or more errors in answering questions about one of the unambiguous conditions. 
+Of the excluded participants, 
+\Sexpr{length(excluded.subjects.rc.N1)} were excluded due to errors in the N1 attachment condition, and \Sexpr{length(excluded.subjects.rc.N2)} due to errors in the N2 attachment condition. We excluded their data because such high error percentages may be indicative of a reading strategy in which readers consistently attach either to N1 or to N2, irrespective of the evidence provided. Such reading strategies, although potentially interesting and worth further study, may also indicate that these participants may have pursued a reading strategy which is outside the scope of the present work.
+
+
+Table \ref{tab:ReanalysisMeanRTs} shows the average reading time at the critical region, \textit{himself}/\textit{herself} \textit{in public}. It shows that the non-local N1 attachment conditions are read more slowly than the ambiguous and local N2 attachment conditions. 
+This could be either because (a) the parser always attempts the local N2 attachment first, even in N1 attachment conditions; or (b) N1 attachment is slower because the first noun, which is more distant from the relative clause, requires more time to be retrieved from memory than the second noun. 
+Although ambiguous sentences are read somewhat more slowly than N2 attachment sentences, the difference is not significant (the 95\% confidence interval for reading times in the ambiguous conditions is $[1832\,ms;\,2084\,ms]$).
+%
+Table \ref{tab:ReanalysisMeanQRTs} shows the average question response time by attachment condition. Question-responses in ambiguous conditions are slower than in unambiguous conditions, and questions about N2 attachment sentences are answered faster than questions about N1 attachment sentences.
+
+\begin{table}[h]
+\caption{Mean reading times (in milliseconds) for the critical region, by attachment.  Within-subject standard errors in brackets \protect\cite{Cousineau:2005,Morey:2008}.}
+\label{tab:ReanalysisMeanRTs}
+\begin{centering}
+<<Reanalysis.MeanRTs, echo=F, results='asis', eval=TRUE, message=FALSE>>=
+
+reading = with(d.qrc, mean.se.cousineau(RT=RT, subject=subj, condition=attachment, conditions.cnt=3))
+
+table =with(reading[c(2,3,1),], sprintf("%.0f (%.0f)", M, SE))
+names(table) = c("N1 attachment", "N2 attachment", "ambiguous")
+
+library(xtable)
+print(xtable(t(data.frame(table))), floating=F, include.rownames=FALSE )
+@
+\end{centering}
+\end{table}
+
+\begin{table}[h]
+\caption{Mean question answering times  (in milliseconds) for RC questions, by attachment. Within-subject standard errors in brackets \protect\cite{Cousineau:2005,Morey:2008}.}
+\label{tab:ReanalysisMeanQRTs}
+\begin{centering}
+<<Reanalysis.MeanQRTs, echo=F, results='asis', eval=TRUE, message=FALSE>>=
+
+questionRT = with(d.qrc, mean.se.cousineau(RT=resp.RT, subject=subj, condition=attachment, conditions.cnt=3))
+
+table =with(questionRT[c(2,3,1),], sprintf("%.0f (%.0f)", M, SE))
+names(table) = c("N1 attachment", "N2 attachment", "ambiguous")
+
+library(xtable)
+print(xtable(t(data.frame(table))), floating=F, include.rownames=FALSE )
+@
+\end{centering}
+\end{table}
+
+Table \ref{tab:ReanalysisYesResponsesByQuestion} shows the average proportions of responses indicating N2 attachment by attachment condition. For example, a `yes'-response to a N1 question is considered to indicate N1 attachment, while a `no'-response is considered to indicate N2 attachment.
+%
+While participants answered questions about unambiguous sentences with an accuracy of approximately 80\%, the percentage of responses indicating N2 attachment in ambiguous sentences was closer to 60\%, suggesting that the preference for N2 attachment was relatively weak. 
+
+\begin{table}[h]
+\caption{Mean proportions of responses indicating N2 attachment by attachment condition. Standard errors in brackets.}
+\label{tab:ReanalysisYesResponsesByQuestion}
+\begin{centering}
+<<Reanalysis.YesResponses.ByQuestion, echo=F, results='asis', eval=TRUE, message=FALSE>>=
+library(xtable)  
+sd.prop = function(x) sqrt( mean(x)*(1-mean(x)) )
+se.prop = function(x) sd.prop(x)/sqrt(length(x))
+mean.se.prop = function(x) sprintf("%.2f (%.2f)", mean(x), se.prop(x))
+ 
+table = with(d.qrc, tapply(!response.n1, list(attachment), mean.se.prop))
+names(table) = nmap(names(table), c("N1"="N1 attachment", "N2"="N2 attachment"))
+table = table[c(2,3,1)]
+
+print(xtable(t(table)), floating=F, include.rownames=FALSE )
+@
+\end{centering}
+\end{table} 
+
+
+Table \ref{tab:ReanalysisRTsByCorrectness} shows the average reading times in unambiguous conditions at the critical region as a function of response correctness. It shows that reading times for trials associated with incorrect responses tend to be numerically shorter for N1 attachment sentences than those associated with correct responses. For N2 attachment sentences, 
+the pattern is reversed.
+%
+However, neither difference is statistically significant.
+ 
+
+\begin{table}[h]
+\caption{Mean reading times  (in milliseconds) in the unambiguous condition at the critical region by correctness of the response.  Within-subject standard errors in brackets \protect\cite{Cousineau:2005,Morey:2008}. }
+\label{tab:ReanalysisRTsByCorrectness}
+\begin{centering}
+<<Reanalysis.RT.ByCorrectness, echo=F, results='asis', eval=TRUE, message=FALSE>>=
+
+readingRT = with(subset(d.qrc, attachment!="ambiguous"), mean.se.cousineau(RT=RT, subject=subj, condition=paste(response.correct.str,attachment,sep="_"), conditions.cnt=4))
+split_condition = strsplit(asc(readingRT$condition), "_")
+
+response = sapply(split_condition, function(x) x[[1]])
+attachment = sapply(split_condition, function(x) x[[2]])
+MSE = with(readingRT, sprintf("%.0f (%.0f)", M, SE))
+table = tapply(MSE, list(attachment, response), I )
+
+library(xtable) 
+print(xtable(t(table)), floating=F)
+
+@
+\end{centering}
+\end{table} 
+
+Table \ref{tab:ReanalysisQRTsByCorrectness} shows the average question-answering time as a function of the correctness of the answer to the comprehension question. It shows that participants take more time to respond incorrectly than correctly. A possible reason is that they first try to retrieve the memory trace of the sentence representation, fail at doing so, and then initiate a guess. Whatever the correct explanation for the delay, it points towards an interpretation that incorrect responses stem from a qualitatively different process requiring more time than is required for an ordinary response.
+
+\begin{table}[h]
+\caption{Mean question-answering times in unambiguous conditions by attachment and correctness of the response.  Within-subject standard errors in brackets \protect\cite{Cousineau:2005,Morey:2008}.}
+\label{tab:ReanalysisQRTsByCorrectness}
+\begin{centering}
+<<Reanalysis.QRT.ByCorrectness, echo=F, results='asis', eval=TRUE, message=FALSE>>=
+ 
+d.qrc$response.correct.str = nmap(asc(d.qrc$response.correct), c('1'='correct response', '0'='incorrect response'))
+
+answersRT = with(subset(d.qrc, attachment!="ambiguous"), mean.se.cousineau(RT=resp.RT, subject=subj, condition=paste(response.correct.str,attachment,sep="_"), conditions.cnt=4))
+
+split_condition = strsplit(asc(answersRT$condition), "_")
+
+response = sapply(split_condition, function(x) x[[1]])
+attachment = sapply(split_condition, function(x) x[[2]])
+MSE = with(answersRT, sprintf("%.0f (%.0f)", M, SE))
+table = tapply(MSE, list(attachment, response), I )
+
+library(xtable) 
+print(xtable(t(table)), floating=F)
+
+@
+\end{centering}
+\end{table} 
+
+To summarize the insights from Tables 1-5:
+\begin{enumerate}
+\item At the critical region, non-local N1 attachment conditions are read more slowly than local N2 attachment and ambiguous conditions.
+\item Question-response times in ambiguous conditions are slower than in unambiguous conditions, and questions about N2 attachment sentences are answered faster than questions about N1 attachment sentences.
+\item In ambiguous sentences, the proportion of responses consistent with an N2 attachment was approximately 60\%, suggesting a weak preference for N2 attachment in the face of global ambiguity. 
+\item In unambiguous sentences, there was no statistically significant effect of response correctness on reading times at the critical region. However, there was a tendency towards shorter reading times for N1 attachment sentences followed by incorrect responses, and towards longer reading times for N2 attachment sentences followed by incorrect responses.
+%
+\item Question-response times were longer for incorrect responses to unambiguous sentences, compared to response times for correct responses.  
+\end{enumerate}
+
+We discuss next the implications of these facts for the underspecification account of Swets et al.
+
+
+\section{Partial Specification and Non-Specification}
+\change{Swets et al. claim} that readers are able to attach the RC during question-answering on underspecification trials. This claim entails that the parser must remember which noun phrases are potential attachment sites---if this information were absent, the reader would have to either re-parse the sentence completely, or examine each noun phrase in memory as a potential attachee, a potentially very expensive operation. 
+Thus, the parser must \textit{store} information about potential attachment sites even when it underspecifies. As a result, we must assume that the underspecified representation of sentence (\ref{ExSwets}c) looks like the one shown in figure~\ref{fig:RepresentationsParSPECvsNonSPEC}a. We will refer to this kind of underspecification as a \textit{partial specification}, because partial information about RC attachment is stored by the parser. We will not assume that information about attachment is stored in a particular format. Therefore, partial specification is consistent with underspecified representations such as those proposed by \citeA{FrazierClifton:1997} or by \citeA{SturtCrocker:1997}.
+ What is important is that information about RC attachment \textit{is} stored.
+
+Importantly, the ambiguity advantage found by Traxler et al.\ and in the superficial questions conditions of the Swets et al.\ experiment is not straightforwardly compatible with partial specification. This is because the parser needs to store attachment-related information in ambiguous as well as unambiguous conditions. Therefore, underspecification will be predicted to be faster than RC attachment only if we stipulate that creating a partial specification requires less time than completing the attachment (i.e., fully specifying the attachment).\footnote{A possible explanation for why partial specification requires less time than full unambiguous specification is that ambiguous attachments are not semantically interpreted and that establishing one syntactic link \textit{and} semantically interpreting it requires more time than establishing two syntactic links. However, this explanation, too, requires stipulations about the relative durations of processes.}
+This may well be a reasonable assumption; but prima facie, establishing a memory for a potential attachment site (and of the co-dependents to be attached) could take just as much time (or more) as actually completing the dependency.
+
+\begin{figure}
+\caption{Two kinds of underspecified representations: partially specified (left), and non-specified (right).}
+\label{fig:RepresentationsParSPECvsNonSPEC}
+\begin{center}
+\includegraphics[width=15cm]{./figures/RepresentationsPartialvsNonSpecified}
+\end{center}
+\end{figure}
+
+However, partial specification is not the only possible way to implement underspecification. An alternative explanation for the ambiguity advantage (the speedup in ambiguous sentences) is that the parser does not save any information at all about potential attachment sites in the ambiguous condition; this is a departure from the assumption that Swets et al.\ must make, as discussed above. Figure \ref{fig:RepresentationsParSPECvsNonSPEC}b illustrates the resulting structure of sentence (\ref{ExSwets}c). The parser keeps information about the main clause and about the relative clause, but it does not associate the RC with any of the noun phrases. The difference between partial specification and what we will refer to as \textit{non-specification} of RC attachment is that in non-specification, potential attachment sites are not marked as such. Thus, in order to save time, the parser does not do anything attachment-related, and this results in an ambiguity advantage. 
+
+An obvious drawback of not storing attachment information is that no attachment can be carried out after reading the comprehension question, at least not without a prohibitively expensive reparsing process. Therefore, in trials where the comprehender engages in non-specification, they have to resort to guessing the answer to the question.{\footnotemark} If we assume that guessing requires more time than informed question-answering, we can explain why relative clause questions are answered more slowly when they are about ambiguous sentences than when they are about unambiguous sentences. This assumption, that guessing consumes more time than informed question-answering, is consistent with the pattern in table  \ref{tab:ReanalysisQRTsByCorrectness}, which shows longer response times in incorrect responses. As discussed above, these longer RTs may represent a failed attempt to retrieve the syntactic representation, followed by a guess; if the total guessing time subsumes these two steps, it seems reasonable to assume that guessing takes longer than an informed decision. 
+%
+Importantly, non-specification is more parsimonious than partial specification to the extent that they can account for the data equally well, because the latter needs to stipulate that partial specification requires less time than full specification, whereas the non-specification model does not require such stipulations.
+
+\footnotetext{A further prediction of the non-specification hypothesis is that on non-specification trials in sentences like (\ref{Ex3NP}), no information is kept on whether the RC can attach to \textit{the general}, \textit{the assistant}, or \textit{the CEO}.
+\begin{exe}
+\ex \label{Ex3NP} Mary showed the general the assistant of the CEO who was standing on the balcony.  
+\end{exe}
+}
+
+What are the consequences of these two alternative theories of underspecification? A computational implementation has the potential to shed light on this question.
+We describe next the implementation details of the partial specification and non-specification models.
+
+
+
+
+
+\section{A Model of Partial Specification}
+
+According to Swets et al.'s proposal, the reading time and question answering data in the ambiguous condition must consist of a mixture of trials. Figure \ref{fig:TrialsPartialvsNonSpec}a shows a flow diagram of the partial specification model which implements the logic of Swets et al.'s account of the results in the RC questions condition.
+
+%\subsection{Incorrect Responses to Questions}
+The figure shows that when attachment is unambiguous, readers have only one option: attaching the relative clause.\footnote{While it is possible to interpret Swets et al.' proposal such that underspecification occurs in both, ambiguous and unambigous sentences, but more frequently in ambiguous sentences, it is not clear why this would be so. Therefore, we will adopt the simplifying assumption that underspecification affects only ambiguous sentences.}
+The processor can choose the attachment site either based on syntactic information (with probability $1-p_{NSYN}$), or based on non-syntactic information (with probability $p_{NSYN}$). The latter option is motivated by the finding that, in some situations, the processor may choose to ignore syntactic cues in the processing of unambiguous sentences and base its interpretation on processing heuristics instead \cite{Ferreira:2003, Christiansonetal:2010}. Furthermore, this assumption is in line with the pattern in table \ref{tab:ReanalysisRTsByCorrectness}, according to which reading times on trials with incorrectly answered comprehension questions tend to be lower than on trials with correctly answered questions for N1 sentences (i.e., closer to reading times in the N2 attachment condition), while the opposite is true for N2 sentences (i.e., reading times on trials with incorrectly answered questions are higher and thus closer to reading times for N1 attachment sentences). This suggests \change{that} on a proportion of those trials, readers might be creating the wrong attachment, resulting in longer (or shorter) reading times than on correctly processed trials.
+Importantly, while \textit{syntactically driven RC attachment} always results in a correct sentence interpretation, \textit{non-syntactically driven RC attachment} can result in correct or incorrect interpretations, depending on whether the cues used in determining the attachment site are aligned with the sentence structure.
+
+Because non-syntactic interpretations may disagree with the sentence structure, this alternative route of interpretation can explain some of the incorrect responses in table \ref{tab:ReanalysisYesResponsesByQuestion}. However, it fails to account for the finding that incorrect responses are slower than correct responses (cf. table \ref{tab:ReanalysisQRTsByCorrectness}). Because both, the syntactic and the non-syntactic route, result in RC attachment, the time required to answer questions about it should be the same in both cases.
+
+A further potential explanation is that although readers process unambiguous sentences in the regular manner, they sometimes \change{fail} to retrieve the representation of the relevant part of the sentence (with probability $p_{FAIL}$) during the question-answering process. As a result, they try to guess the correct answer. Importantly, we will assume that guessing requires more time than regular question-answering, as discussed above in connection with the pattern in table \ref{tab:ReanalysisQRTsByCorrectness}.\footnote{
+There are several explanations for why guesses could be slower than informed decisions: When readers fail to recall the sentence structure, they start searching their memory for clues as to the correct answer. This extensive search in memory could slow down the response. Alternatively, responding to a question could involve a competition between the two response options in a manner similar to the competition-integration model \cite{Spiveyetal:1998, SpiveyKnowlton:1996}. Lack of evidence either way could prolong competition, and thus cause long response times when information about RC attachment is either not present or cannot be recalled. Yet another possibility is uncertainty about past input \cite{levy2009eye}; in this case, an incorrect representation of the previously processed material could lead to a retrieval failure due to a retrieval cue not matching the intended target.}
+%
+Because the retrieval-failure explanation and the non-syntactic RC attachment explanation make different predictions about question-response latencies, we will be able to assess the relative importantce of non-syntactic RC attachment and of guesses in the explanation of incorrect responses.
+
+%\subsection{The Partial Specification Mechanism}
+Because non-syntactic RC attachment does not make use of syntactic cues, attachment sites must be chosen based on the same information as in ambiguous conditions (e.g., thematic information, or linear-order-based heuristics). Therefore, we assume that disambiguation in ambiguous conditions is carried out by the same process as non-syntactic attachment. Because such a process may take into account the linear order of potential attachment sites, it may be exhibit an N2 attachment preference \cite<e.g.,>{CarreirasClifton:1993}. This is in line with the findings presented in table \ref{tab:ReanalysisYesResponsesByQuestion}, according to which there is a bias towards N2 responses in the ambiguous condition. To capture this bias in the model, we assume that non-syntactic RC attachment results in N2 attachment with probability $1-p_{N1}$, and in N1 attachment with probability $p_{N1}$, where $p_{N1}$ is a free parameter to be estimated from the data.
+
+According to the partial specification model in figure \ref{fig:TrialsPartialvsNonSpec}a, participants underspecify the structure of ambiguous sentences on some trials (with probability $p_U$). The critical assumption of the partial specification model is that on those trials, only a partially specified structure, as in fig. \ref{fig:RepresentationsParSPECvsNonSPEC}a, are generated.
+%
+Because creating a partially specified representation requires less time than creating a full representation, reading is fast on underspecification trials. However, questions are answered slowly, because the previously omitted RC attachment needs to be carried out during the question-answering stage, before responding. On non-underspecification trials on the other hand, RC attachment is carried out during reading which is why participants read more slowly, but are faster at answering questions. Irrespective of whether a full or a partially specified sentence representation is stored, its retrieval can fail during the question-answering phase; in such a case, a guess as to the correct answer is generated. 
+
+We will also assume, in agreement with the results in table \ref{tab:ReanalysisYesResponsesByQuestion}, that the probability of retrieval failure does not depend on the attachment condition or the attachment-related operation carried out during reading (attachment, or underspecification). 
+
+
+
+\begin{figure}[h!]
+\caption{Flow-charts of the sequence of operations according to the the partial specification model (left panel), and according to the non-specification model (right panel). Probabilities of decisions are shown in brackets where appropriate. Differences between the two models are highlighted in grey.}
+\label{fig:TrialsPartialvsNonSpec}
+\begin{center}
+\includegraphics[width=13cm]{./figures/TrialTypesFlow}
+\end{center}
+\end{figure}
+
+
+To summarize, the partial specification model makes the following assumptions about the parser's operations:
+\begin{enumerate}
+\item Readers always fully specify RC attachment in unambiguous sentences, either using syntactic information (with probability $1-p_{NSYN}$), or using non-syntactic heuristics (with probability $p_{NSYN}$). In the latter case, they choose to attach the RC to N2 (with probability $1-p_{N1}$) or to N1 (with probability $p_{N1}$).
+\item In ambiguous sentences, readers may choose to underspecify with probability $p_U$. When readers do not underspecify the attachment (with probability $1-p_U$), they attach the RC during reading using non-syntactic information to determine the attachment site.
+\item Answering questions about RC attachment requires the retrieval of (parts of) the sentence representation. Retrieval of the corresponding memory trace may fail with probability $p_{FAIL}$, irrespective of whether it is fully or partially specified.
+\item When retrieval fails, comprehenders attempt to guess the answer. They answer `yes' with probability $p_{YES}$, and `no' with probability $1-p_{YES}$. Guessing requires more time than giving an informed response.
+\item The regular mechanism required for question-answering can only operate on fully specified representations, and so readers attempt to disambiguate partially specified representations before answering a question. However, disambiguation can only take place if an underspecified representation is successfully retrieved.
+\item[6a.] When the parser underspecifies, it stores information about potential attachment sites, thus allowing for postponed RC attachment if necessary. We call this assumption 6a because the alternative proposal (presented below), will make a different assumption (6b).
+\end{enumerate}
+
+
+In addition, our implementation of the partial specification model makes the following 
+assumptions about the timing of processes:
+\begin{enumerate}
+\item Partial specification requires less time than full specification of N1 or N2 attachment.
+\item N2 attachment requires less time than N1 attachment. This assumption is motivated by the findings presented in table \ref{tab:ReanalysisMeanRTs}.
+\item Generating a guess as to the correct response to a question requires more time than giving an informed response. This assumption is motivated by the findings presented in table \ref{tab:ReanalysisQRTsByCorrectness}.
+\end{enumerate}
+
+
+\section{A Model of Non-Specification}
+Like the partial specification model, the non-specification model posits a mixture of different kinds of trials as well. In the unambiguous conditions, reading is assumed to proceed as in the partial specification model: participants always carry out RC attachment, using syntactic or non-syntactic cues, as illustrated in figure \ref{fig:TrialsPartialvsNonSpec}b. In most cases, this attachment is followed by an informed response to the comprehension question, but in some cases, participants have to guess the answer due to a failed retrieval from memory. 
+
+When reading ambiguous sentences, readers can either attach the RC or choose to underspecify attachment, just like in the partial specification model. When the RC is attached, comprehenders proceed like in the partial specification model. They give informed responses to comprehension questions, but sometimes, when retrieval of the sentence representation fails, they have to resort to guessing. 
+
+The crucial difference between the two models lies in what constitutes underspecification during reading. While the partial specification model assumes that some information about potential attachment sites is stored (as in fig.~\ref{fig:RepresentationsParSPECvsNonSPEC}a), the non-specification model assumes that no such information is stored (as in fig.~\ref{fig:RepresentationsParSPECvsNonSPEC}b). A consequence of the latter assumption is that the non-specification parser cannot choose to fully specify RC attachment at a later point. 
+
+Thus, the key difference in the predictions of the two models is that according to non-specification, question responses on underspecification trials consist of guesses only, whereas according to the partial specification model they consist of (i) some guesses and (ii) some informed responses preceded by RC attachment during the question answering phase. However, both accounts agree that underspecification trials are preceded by faster reading.
+
+In sum, the non-specification model makes the same assumptions about the timing of processes as the partial specification model, as well as assumptions 1-5 about the parser's operations. Instead of assumption 6a, however, the non-specification model adopts assumption 6b.
+
+\begin{enumerate}
+\item[6b.] When the parser underspecifies, it does \textit{not} store any information about potential attachment sites, and thus does not allow for postponed RC attachment. As a result, the only way to answer a question on underspecification trials is to guess.
+\end{enumerate}
+
+
+\section{Implementation of the Two Underspecification Accounts, and of Non-underspecification Models as Baselines}
+
+The partial specification model and the non-specification can both explain Swets et al.'s finding that questions are answered more slowly when they are about ambiguous sentences than when they are about unambiguous sentences. Both models predict that this slowdown in question-answering is caused by underspecification trials, i.e., trials on which RC attachment is underspecified. Importantly however, the models make different predictions about the quantitative relationship between reading time, question-response time, and response patterns on underspecification trials. 
+
+The partial specification model predicts that response times on underspecification trials are longer than on non-specification trials by the amount of time required to attach the RC. This means, for example, that the difference in reading times between underspecification trials and N2 attachment trials should be equal to the difference in question-response times between N2 attachment trials and underspecification trials.\footnote{An alternative possibility is that RC attachment requires more time when it is carried out during question-answering than when it is carried out during reading. Although it is to be expected that retrieval of the sentence representation will take more time during the question-answering phase than during reading, retrieval is involved in the answering of questions about unambiguous sentences as well. Thus, longer attachment times during question-answering can only be caused by a slowdown in the RC attachment operation \textit{after} the sentence representation has been retrieved. However, it is not clear what could cause such a slowdown. }
+Furthermore, underspecification trials followed by postponed N1 or N2 attachment should result in responses indicating such attachment in most cases.
+
+The non-specification model, on the other hand, predicts that response times on underspecification trials should be equal to the time required to generate a guess, i.e., they should be equal to response times for erroneous responses in unambiguous conditions. Furthermore, such responses should indicate N1 and N2 attachment with equal probability.
+
+Because these predictions cannot be tested without obtaining estimates of RC attachment durations, as well as of the proportion of underspecification trials and their response latencies, we formalized both models in Stan \cite{Stan2.7.0} in order to estimate the model parameters and formally compare the quantitative fits of the models to the data. 
+%
+The simultaneous estimation of model parameters and model comparison will allow us \change{to} answer the following questions: Firstly, to what extent do the data agree with Swets et al.'s explanation for the slow responses to questions in the ambiguous condition? In other words, is there evidence for a subset of underspecification trials involving faster reading and slower responses than non-underspecification trials?
+Secondly, is the response time pattern on underspecification trials closer to the predictions of the partial specification model or to those of the non-specification model?
+Thirdly, how often do readers underspecify?
+
+\change{
+In order to compare the underspecification models to baseline no-underspecification models, we also implemented three versions of a model assuming no underspecification, i.e., models in which the probability of underspecification is 0. These three no-underspecification models assume (i) retrieval failure and non-syntactic RC attachment, (ii) no retrieval failure, and (iii) no non-syntactic RC attachment. 
+}
+
+
+\subsection{Method}
+
+We implemented hierarchical versions both models according to the flow charts in fig.~\ref{fig:RepresentationsParSPECvsNonSPEC} in Stan \cite{Stan2.7.0}. We assumed that all reading times and reaction times follow a gamma distribution \cite<e.g.,>{Luce:1986}. We estimated one common parameter for (1) the scale and separate shape parameters for (2) base reading time per word (i.e., underspecification), (3) N1 attachment, (4) N2 attachment, (5) informed question answering, and (6) guessing. Furthermore, we estimated (7) the probability of failing to recall a sentence during question-answering ($p_{FAIL}$), 
+(8) the probability of underspecifying in the ambiguous condition ($p_{U}$), 
+(9) the probability of choosing the attachment site based on non-syntactic information ($p_{NSYN}$), 
+(10) the probability of choosing an N1 attachment when attaching the RC in the ambiguous condition  ($p_{N1}$), and
+(11) the probability of guessing `yes' ($p_{YES}$). 
+We assumed that by-participant parameter values for all probability parameters followed a beta distribution (the prior on the probabilities was a vague $Beta(1,1)$ distribution), and that all other parameters were distributed log-normally. We treated the grand mean and the variance of the by-participant parameters as free parameters to be estimated as part of the model.
+
+\change{As mentioned above, in} order to determine the relative importance of non-syntactic RC attachment and retrieval failure in accounting for incorrect responses, we first fit three models without any underspecification ($p_U = 0$): we compared a model assuming retrieval failure and non-syntactic RC attachment ($p_{FAIL}$ and $p_{NSYN}$ were free parameters) to a model assuming no retrieval failure ($p_{FAIL} = 0$), and to a model assuming no non-syntactic RC attachment ($p_{NSYN} = 0$). In a second step, in order to quantify the evidence in favor of underspecification, we compared the models with no underspecification to a partial specification and a non-specification model. Model comparison was done on the basis of the WAIC (Watanabe-Akaike Information Criterion; \citeNP{Watanabe:2010, Vehtari:2014}), which is an estimate of the model generalizability and rewards better fit to the data (lower WAIC) while penalizing model flexibility (higher WAIC). \change{For each of the five models, we ran 4 chains with 2000 iterations.}
+
+
+
+\subsection{Results and Discussion}
+
+<<ModelResultsTableNonuspecLoad, echo=FALSE, results='asis', eval=TRUE, message=FALSE>>=
+load("./Models_mvms/results/table_models.rda")
+load("./Models_mvms/results/comparisons.rda")
+get_waic <- function(model) strsplit(table_models['waic', model], " ")[[1]][1]
+delta_waic <- function(cmp) with(as.list(cmp), sprintf("\\Delta WAIC=%0.1f", -2*elpd_diff))
+delta_se_waic <- function(cmp) with(as.list(cmp), sprintf("SE_{\\Delta WAIC}=%0.1f", 2*se))
+delta_waic_se <- function(cmp) paste(delta_waic(cmp), delta_se_waic(cmp), sep=",")
+
+@
+
+
+Table \ref{table:NoUspecEstimates} shows the WAIC and parameter estimates along with Bayesian \textit{credible intervals} for the three models without underspecification. The credible interval can be interpreted as the range which contains the true parameter value with 95\% probability \cite<e.g.,>{Lynch:2007}. 
+The first column of the table shows that in order to account for incorrect responses without assuming retrieval failure, one has to assume that participants ignore syntactic cues on approximately $40\%$  of the trials ($\hat{p}_{nsyn}=39\%$, CI: $31\%-47\%$), and that they choose to attach to N1 in approximately $40\%$ of those cases ($\hat{p}_{N1}=41\%$, CI: $35\%-47\%$). This finding agrees with an error rate of approximately $20\%$ in table \ref{tab:ReanalysisYesResponsesByQuestion}: in many cases, readers form a correct interpretation of the sentence in spite of ignoring syntactic cues, resulting in only $20\%$ incorrect responses.
+Table \ref{table:NoUspecEstimates} also shows that the model accounting for erroneous responses without retrieval failures needs to assume substantially higher response times for informed responses ($2647ms$) than the other two models ($2043ms$ and $2123ms$, respectively) can generate only informed responses. Therefore, the average response time for informed responses is just the average response time. 
+
+Importantly, table \ref{table:NoUspecEstimates} also shows that the WAICs are substantially higher for the model assuming no retrieval failure ($WAIC=\Sexpr{get_waic('est_nouspec_fit_misparse')}$) and for the model assuming no non-syntactic RC attachment ($WAIC=\Sexpr{get_waic('est_nouspec_fit_misretrieval')}$) than for the model assuming both ($WAIC=\Sexpr{get_waic('est_nouspec_fit_full')}$). This means that response times associated with incorrect responses are best described by the model assuming both mechanisms, i.e., as mixture of two distributions: relatively fast responses due to incorrect RC attachment when syntactic cues are ignored ($Est.=2123ms$, CI: $2073-2175$), and relatively slow responses due to guessing ($Est.=5129ms$, CI: $4954-5305$).
+
+Fig. \ref{fig:ModelsFitOverall1} (left panels) shows the predictions of the best model without underspecification alongside the average response percentages indicating N1 attachment, as well as reading and response times from the Swets et al. data: while it can account for the patterns in question-answering and reading times, it predicts equal response times in all attachment conditions. This is because this model does not implement any underspecification ($p_U = 0$) and thus assumes equal proportions of guesses and infomed responses in all conditions.
+
+
+\begin{table}[ht!]
+\caption{Models with no underspecification: Parameter estimates and WAIC. (95\% credible intervals in brackets.)}
+\label{table:NoUspecEstimates}
+%\begin{centering}
+
+<<ModelResultsTableNonuspec, echo=FALSE, results='asis', eval=TRUE, message=FALSE>>=
+
+library(xtable)
+library(magrittr)
+source("./source/misc.R")
+
+table_models_print <- table_models
+#table_models_print <- table_models_print[c(nrow(table_models_print), 1:(nrow(table_models_print)-1)),]
+rownames(table_models_print) %<>% nmap(c("p_uspec_hyper"="\\specialcell{r}{ p_{U} }", 
+                                   "p_arbitrary_attachment_hyper"="\\specialcell{r}{ p_{NSYN} }",
+                                   "p_retrieval_fail_hyper"="\\specialcell{r}{ p_{FAIL} }", 
+                                   "p_att_n1_hyper"="\\specialcell{r}{ p_{N1} }",
+                                   "p_guess_yes_hyper"="\\specialcell{r}{ p_{YES} }",
+                                   "time_uspec"="\\specialcell{p{3.1cm}}{\\textsc{reading time:} \\\\ \\textsc{undespecification} }", 
+                                   "time_n2"="\\specialcell{p{3.1cm}}{\\textsc{reading time:} \\\\ \\textsc{N2 attachment} }", 
+                                   "time_n1"="\\specialcell{p{3.1cm}}{\\textsc{reading time:} \\\\ \\textsc{N1 attachment} }",
+                                   "time_inf_resp"="\\specialcell{p{2.9cm}}{\\textsc{response time:}  \\\\ \\textsc{informed} }",
+                                   "time_guess"="\\specialcell{p{2.9cm}}{\\textsc{response time:}  \\\\  \\textsc{guess} }",
+                                   "waic"="\\specialcell{r}{ $WAIC$ }"))
+colnames(table_models_print) %<>% nmap(c("est_nouspec_fit_misparse"="No underspecification ($p_{FAIL}=0$)",
+                                   "est_nouspec_fit_misretrieval"="No underspecification ($p_{NSYN}=0$)",
+                                   "est_nouspec_fit_full"="No underspecification (all parameters)",
+                                   "est_pspec_amb_fit"="Partial specification",
+                                   "est_nspec_amb_fit"="Non-specification" ))
+table_models_print[is.na(table_models_print)] <- "$-$"
+xtable(table_models_print[-c(1,6),1:3], align="r|p{3.6cm}p{3.6cm}p{3.6cm}") %>% print(sanitize.rownames.function = I, sanitize.colnames.function = I, sanitize.text.function = I, floating=F)
+ 
+@
+
+\end{table}
+
+Table \ref{table:UspecEstimates} shows the parameter estimates for both underspecification models. The credible intervals for $p_U$ show that the estimated proportion of underspecification trials is relatively low for both models: $0-17\%$ of all trials for the the partial specification model, and $1-12\%$ for the non-specification model.
+
+The remaining parameter estimates do not substantially differ between the two underspecification models, and do not deviate by much from the estimates of the maximal model without underspecification in table \ref{table:NoUspecEstimates}.
+The WAIC slightly favors the non-specification model ($WAIC=\Sexpr{get_waic('est_nspec_amb_fit')}$) over the partial specification model ($WAIC=\Sexpr{get_waic('est_pspec_amb_fit')}$), which is likely due to the fact that the non-specification model can better account for the increased response time in the ambiguous conditions, as shown in fig. \ref{fig:ModelsFitOverall1} (bottom).
+However, the difference in WAICs ($\Sexpr{delta_waic( cmp$`nspec_amb-pspec_amb` )}$)
+is relatively small given in relation to the standard error for the differences in WAIC ($\Sexpr{delta_se_waic( cmp$`nspec_amb-pspec_amb` )}$), and so the evidence in favor of the non-specification model given the present data can be considered very weak at best. 
+
+Importantly, both underspecification models had higher WAIC values than the maximal model without underspecification in table \ref{table:NoUspecEstimates} ($WAIC=\Sexpr{get_waic('est_nouspec_fit_full')}$), indicating that the latter is more likely to generalize well to future data. 
+%
+Because these differences, too, are relatively small in comparison to the standard error of the WAIC differences ($\Sexpr{delta_waic_se( cmp$`nouspec-nspec_amb` )}$ and $\Sexpr{delta_waic_se( cmp$`nouspec-pspec_amb` )}$ respectively), they do not allow us to rule in favor of one or another model. However, this finding suggests that there is little evidence for the existence of underspecification trials, i.e., trials with faster-than-normal reading, and slower-than-normal question answering. This is also why both underspecification models predict shorter response times in the ambiguous condition than were actually observed, as can be seen in fig. \ref{fig:ModelsFitOverall1}. In order to predict higher response times in that condition, one needs to assume a higher percentage of underspecification trials. However, doing so would cause the model to underpredict the average reading time in ambiguous conditions. Thus, the predictions in fig. \ref{fig:ModelsFitOverall1} represent the optimal point in the trade-off between prediction error for reading times and reaction times.
+
+
+\begin{table}[ht!]
+\caption{Underspecification models: Parameter estimates and WAIC. (95\% credible intervals in brackets.)}
+\label{table:UspecEstimates}
+
+<<ModelResultsTableUspec, echo=FALSE, results='asis', eval=TRUE, message=FALSE>>=
+xtable(table_models_print[,4:5], align="r|p{3.6cm}p{3.6cm}") %>% print(sanitize.rownames.function = I, sanitize.colnames.function = I, sanitize.text.function = I, floating=F) 
+@
+
+\end{table}
+
+
+\begin{figure}[h!]
+\caption{Predictions of (i) the model without underspecification (left), (ii) the partial specification model (center), and (iii) the non-specification model (right) in comparison to the results from Swets et al.'s experiment. The plots shows percentages of N1 responses (upper panels), reading times (central panels), and question-answering latencies (lower panels). Error bars on the model predictions correspond to 95\% credible intervals.}
+\label{fig:ModelsFitOverall1}
+\begin{centering}
+
+<<ModellPredictionsPlot, echo=FALSE, results='asis', eval=TRUE, message=FALSE>>=
+
+library(xtable)
+library(plyr)
+library(dplyr)
+library(magrittr)
+library(ggplot2)
+
+load("./Models_mvms/results/predictions.rda")
+d_predictions$type %<>% ordered(levels=c("predicted", "observed"))
+d_predictions$model %<>% nmap(c(nouspec="No underspecification", pspec="Partial specification", nspec="Non-specification"))
+d_predictions$model %<>% ordered(levels=c("No underspecification", "Partial specification", "Non-specification"))
+
+#d_predictions$DV %<>% as.character()
+#d_predictions$DV[d_predictions$DV == " % Responses N1"] <- "% N1 Responses"
+
+p <- d_predictions %>% ggplot(aes(x=iv_cond, y=val, linetype=type, group=paste(type))) +
+      facet_grid(DV~model, scales="free") + geom_point() + geom_line() +
+      geom_errorbar(aes(ymin=lower, ymax=upper), width=.1)
+p <- p + theme_bw() + theme(axis.text.x = element_text(angle = 25, hjust = 1))
+p <- p + xlab("") + ylab("")
+print(p)
+ 
+@
+
+
+\end{centering}
+\end{figure}
+
+In sum, we found evidence for two types of trials which can lead to incorrect responses: trials with relatively fast responses, preceded by non-syntactic RC attachment, and trials with relatively slow responses due to guessing, following a failure to retrieve. Furthermore, we found very little evidence for the existence of underspecification trials. Higher WAIC values for underspecification models and estimates indicating a low probability of underspecification indicate that if readers underspecify, they do so very rarely.
+
+\newpage
+
+\section{General Discussion}
+We have presented two models which are compatible with Swets et al.'s finding of longer question-answering times following ambiguous conditions than unambiguous conditions. The \textit{partial specification model} is an extension of Swets et al.'s original underspecification model and is based on the assumption that ambiguous sentences can be underspecified, but that some information about potential RC attachment sites is stored. This means that RCs with an initially underspecified attachment can be accessed and attached at a later point in time. According to this model, answering questions about ambiguous RC attachment should require more time because RC attachment is carried out during the question-answering phase.
+
+We further proposed an alternative, the \textit{non-specification model}, which also bears the reading time signature of underspecification, i.e., it predicts fast reading in ambiguous sentences, followed by slower question-answering than in unambiguous sentences. This model assumes that no information about potential attachment sites is stored. Therefore, no RC attachment can take place during the question answering phase because the parser does not know which noun phrases in memory are viable candidates for attachment. Thus, participants try to guess the right answer, which requires more time than providing an informed response on trials where RC attachment took place during reading.
+
+We argued that because both models posit a mixture of trials which are not straightforwardly separable, their quality of fit is best assessed by directly modeling this mixture. We then estimated the model parameters for several candidate models and compared the models' relative quality of fit. \change{In order to obtain correct estimates} of process durations, we first compared three models without underspecification. We found evidence for the assumption that readers sometimes ignore syntactic cues in RC attachment, as well as for the assumption that, in spite of having made an attachment during reading, readers sometimes fail to retrieve the processed sentence structure and have to resort to guessing the answer to a comprehension question. We therefore incorporated both of these assumptions into our implementation of the underspecification models.
+
+We found that both underspecification models can account for the data nearly equally well, with the non-specification model providing a slightly better quantitative account of the longer question-response times in the ambiguous condition. Furthermore, the estimates of both underspecification models show that underspecification, to the extent that it exists, affects less than $17\%$ of all trials in the ambiguous conditions. This low percentage is in line with our finding that both underspecification models had a somewhat worse fit according to their WAICs than a model assuming no underspecification: A potentially slightly better fit for the underspecification models was offset by the additional model flexibilitly due to the additional parameters related to the probability of underspecification.
+
+In conclusion, the models investigated suggest that underspecification, to the extent that underspecification is an adequate account of the ambiguity advantage, appears to be a relatively rare phenomenon given the Swets et al.\ data. Because of its low frequency of occurrence in these data, both models provide an equally good account of underspecification. A major achievement of the present work is that we develop a methodology for formalizing and testing the assumptions underlying underspecification, and we evaluate the empirical evidence for different instantiations of underspecification. Although it is highly plausible that some form of underspecification is in play in day-to-day language use, the range of underspecification strategies \change{deployed} in sentence comprehension needs closer investigation, using carefully controlled experiments such as Swets and colleagues', and computational modeling.
+
+
+\section{Conclusion}
+We have presented two different models of underspecification and tested their predictions on the data of \citeA{SwetsDesmetCliftonFerreira2008}. \change{We found evidence that two different mechanisms are responsible for incorrect responses, one of which is likely to reflect readers' failure to employ syntactic cues during processing, while the other appears to reflect failure to retrieve the sentence meaning followed by guessing.
+We further found that in the data we investigated there is very little evidence for the existence of underspecification trials as proposed by \citeA{SwetsDesmetCliftonFerreira2008} (i.e., faster reading of the relative clause, followed by slowed response to questions). We also found that under the assumption that readers do underspecify, they underspecify only rarely.} Thus, the empirical evidence from controlled studies for underspecification remains an open question; it is also unclear at present what exactly triggers underspecification in some trials but not in others. However, we are confident that these issues can be addressed in future research by investigating experimental data through the lens of computational modeling, as we have done here.
+Moreover, we have demonstrated a method for choosing between models of real-time processes in sentence comprehension that make qualitative predictions about the relationship between several dependent variables. We believe that sentence processing research will greatly benefit from a wider use of such methods.
+
+\bibliographystyle{apacite}
+\bibliography{bibliography}
+
+
+
+\end{document}
